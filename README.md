@@ -4,6 +4,9 @@ Denvia yt-dlp Downloader is a simple Windows desktop GUI for yt-dlp, built with 
 
 It allows users to analyze video links, preview video information, select quality options, and download videos through a clean graphical interface.
 
+<img width="897" height="759" alt="image" src="https://github.com/user-attachments/assets/f647874b-da22-411c-9282-a9a74d4f291c" />
+
+
 ## Features
 
 - Analyze single video links before downloading
