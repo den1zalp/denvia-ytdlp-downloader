@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Reflection.Emit;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -57,6 +58,11 @@ namespace YTDlpGui
             lblVideoTitle.Text = "No video loaded";
             lblVideoInfo.Text = string.Empty;
 
+            chkUseArchive.Checked = true;
+            chkUseArchive.Enabled = false;
+            numMaxVideos.Value = 25;
+            numMaxVideos.Enabled = false;
+
             LoadLockedQualityPlaceholder();
 
             txtUrl.TextChanged += txtUrl_TextChanged;
@@ -67,6 +73,12 @@ namespace YTDlpGui
 
         private void txtUrl_TextChanged(object? sender, EventArgs e)
         {
+            if (chkPlaylistMode.Checked)
+            {
+                btnDownload.Enabled = !string.IsNullOrWhiteSpace(txtUrl.Text);
+                return;
+            }
+
             if (!isVideoAnalyzed)
             {
                 return;
@@ -81,8 +93,51 @@ namespace YTDlpGui
             }
         }
 
+        private void chkPlaylistMode_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (chkPlaylistMode.Checked)
+            {
+                isVideoAnalyzed = false;
+                analyzedUrl = string.Empty;
+
+                picThumbnail.Image?.Dispose();
+                picThumbnail.Image = null;
+
+                lblVideoTitle.Text = "Playlist / Channel mode";
+                lblVideoInfo.Text = "Analyze is skipped. The link will be downloaded directly.";
+
+                LoadPlaylistQualityOptions();
+
+                btnAnalyze.Enabled = false;
+                btnDownload.Enabled = !string.IsNullOrWhiteSpace(txtUrl.Text);
+
+                chkUseArchive.Enabled = true;
+                numMaxVideos.Enabled = true;
+
+                lblProgress.Text = "Playlist / Channel mode ready";
+            }
+            else
+            {
+                ResetAnalyzedVideoState();
+
+                btnAnalyze.Enabled = true;
+                btnDownload.Enabled = false;
+
+                chkUseArchive.Enabled = false;
+                numMaxVideos.Enabled = false;
+
+                lblProgress.Text = "Analyze required";
+            }
+        }
+
         private async void btnAnalyze_Click(object sender, EventArgs e)
         {
+            if (chkPlaylistMode.Checked)
+            {
+                MessageBox.Show("Analyze is disabled in Playlist / Channel mode. You can download directly.");
+                return;
+            }
+
             string url = txtUrl.Text.Trim();
 
             if (string.IsNullOrWhiteSpace(url))
@@ -207,10 +262,13 @@ namespace YTDlpGui
                 return;
             }
 
-            if (!isVideoAnalyzed || !string.Equals(url, analyzedUrl, StringComparison.OrdinalIgnoreCase))
+            if (!chkPlaylistMode.Checked)
             {
-                MessageBox.Show("Please analyze the video first.");
-                return;
+                if (!isVideoAnalyzed || !string.Equals(url, analyzedUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show("Please analyze the video first.");
+                    return;
+                }
             }
 
             string appFolder = AppContext.BaseDirectory;
@@ -238,7 +296,9 @@ namespace YTDlpGui
                 return;
             }
 
-            string outputTemplate = Path.Combine(selectedFolder, "%(title)s.%(ext)s");
+            string outputTemplate = chkPlaylistMode.Checked
+                ? Path.Combine(selectedFolder, "%(uploader)s", "%(playlist_index)s - %(title)s.%(ext)s")
+                : Path.Combine(selectedFolder, "%(title)s.%(ext)s");
 
             ProcessStartInfo startInfo = new ProcessStartInfo
             {
@@ -250,6 +310,31 @@ namespace YTDlpGui
             };
 
             startInfo.ArgumentList.Add("--newline");
+
+            if (chkPlaylistMode.Checked)
+            {
+                startInfo.ArgumentList.Add("--yes-playlist");
+
+                int maxVideos = (int)numMaxVideos.Value;
+
+                if (maxVideos > 0)
+                {
+                    startInfo.ArgumentList.Add("--playlist-end");
+                    startInfo.ArgumentList.Add(maxVideos.ToString(CultureInfo.InvariantCulture));
+                }
+
+                if (chkUseArchive.Checked)
+                {
+                    string archivePath = Path.Combine(selectedFolder, "download-archive.txt");
+
+                    startInfo.ArgumentList.Add("--download-archive");
+                    startInfo.ArgumentList.Add(archivePath);
+                }
+            }
+            else
+            {
+                startInfo.ArgumentList.Add("--no-playlist");
+            }
 
             AddQualityArguments(startInfo);
 
@@ -268,6 +353,17 @@ namespace YTDlpGui
             progressDownload.Value = 0;
             lblProgress.Text = "Starting...";
             AppendLog("Download started...");
+
+            if (chkPlaylistMode.Checked)
+            {
+                AppendLog("Playlist / Channel mode is enabled.");
+                AppendLog("Max videos: " + numMaxVideos.Value.ToString(CultureInfo.InvariantCulture));
+
+                if (chkUseArchive.Checked)
+                {
+                    AppendLog("Archive mode: enabled. Already downloaded items will be skipped.");
+                }
+            }
 
             isCancelling = false;
             SetDownloadUiState(isDownloading: true);
@@ -503,6 +599,18 @@ namespace YTDlpGui
             cmbQuality.Enabled = false;
         }
 
+        private void LoadPlaylistQualityOptions()
+        {
+            cmbQuality.Items.Clear();
+            cmbQuality.Items.Add(new QualityOption("Best MP4"));
+            cmbQuality.Items.Add(new QualityOption("1080p or below MP4", 1080));
+            cmbQuality.Items.Add(new QualityOption("720p or below MP4", 720));
+            cmbQuality.Items.Add(new QualityOption("480p or below MP4", 480));
+            cmbQuality.Items.Add(new QualityOption("Audio Only MP3", audioOnly: true));
+            cmbQuality.SelectedIndex = 0;
+            cmbQuality.Enabled = true;
+        }
+
         private void ResetAnalyzedVideoState()
         {
             isVideoAnalyzed = false;
@@ -641,13 +749,17 @@ namespace YTDlpGui
 
         private void SetDownloadUiState(bool isDownloading)
         {
-            btnDownload.Enabled = !isDownloading && isVideoAnalyzed;
+            btnDownload.Enabled = !isDownloading && (isVideoAnalyzed || chkPlaylistMode.Checked);
             btnCancel.Enabled = isDownloading;
-            btnAnalyze.Enabled = !isDownloading;
+            btnAnalyze.Enabled = !isDownloading && !chkPlaylistMode.Checked;
             btnBrowse.Enabled = !isDownloading;
             txtUrl.Enabled = !isDownloading;
             txtFolder.Enabled = !isDownloading;
-            cmbQuality.Enabled = !isDownloading && isVideoAnalyzed;
+            cmbQuality.Enabled = !isDownloading && (isVideoAnalyzed || chkPlaylistMode.Checked);
+
+            chkPlaylistMode.Enabled = !isDownloading;
+            chkUseArchive.Enabled = !isDownloading && chkPlaylistMode.Checked;
+            numMaxVideos.Enabled = !isDownloading && chkPlaylistMode.Checked;
 
             btnDownload.Text = isDownloading ? "Downloading..." : "Download";
         }
@@ -683,6 +795,13 @@ namespace YTDlpGui
             label1.ForeColor = Color.FromArgb(210, 210, 210);
             label2.ForeColor = Color.FromArgb(210, 210, 210);
             label3.ForeColor = Color.FromArgb(210, 210, 210);
+            label4.ForeColor = Color.FromArgb(210, 210, 210);
+
+            StyleCheckBox(chkPlaylistMode);
+            StyleCheckBox(chkUseArchive);
+
+            numMaxVideos.BackColor = Color.FromArgb(35, 38, 47);
+            numMaxVideos.ForeColor = Color.White;
 
             lblVideoTitle.ForeColor = Color.White;
             lblVideoTitle.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
@@ -726,6 +845,13 @@ namespace YTDlpGui
             button.ForeColor = Color.White;
             button.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             button.Cursor = Cursors.Hand;
+        }
+
+        private void StyleCheckBox(CheckBox checkBox)
+        {
+            checkBox.BackColor = Color.Transparent;
+            checkBox.ForeColor = Color.FromArgb(210, 210, 210);
+            checkBox.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular);
         }
 
         private void StyleInvisibleButton(Button button, Color backColor)
@@ -789,11 +915,6 @@ namespace YTDlpGui
             path.CloseFigure();
 
             control.Region = new Region(path);
-        }
-
-        private void Form1_Load(object sender, EventArgs e)
-        {
-
         }
     }
 }
