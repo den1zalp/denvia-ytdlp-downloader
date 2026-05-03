@@ -33,6 +33,11 @@ Do not download the automatically generated `Source code` files unless you want 
 6. Select an available quality.
 7. Click `Download`.
 
+
+<img width="902" height="693" alt="image" src="https://github.com/user-attachments/assets/40a258c9-f366-44b3-ac74-76708456a323" />
+
+
+
 ## Folder Structure
 
 The application expects the `Tools` folder to be in the same directory as `YTDlpGui.exe`.
