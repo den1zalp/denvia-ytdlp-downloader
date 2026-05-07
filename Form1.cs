@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Reflection.Emit;
 using System.Text.Json;
@@ -534,14 +535,14 @@ namespace YTDlpGui
 
             string title = GetJsonString(root, "title", "Unknown title");
             string extractor = GetJsonString(root, "extractor_key", "Unknown site");
-            string thumbnailUrl = GetJsonString(root, "thumbnail", string.Empty);
+            List<string> thumbnailUrls = GetThumbnailCandidates(root);
             double durationSeconds = GetJsonDouble(root, "duration", 0);
 
             lblVideoTitle.Text = title;
             lblVideoInfo.Text = BuildVideoInfoText(extractor, durationSeconds);
 
             PopulateQualityOptionsFromJson(root);
-            await LoadThumbnailAsync(thumbnailUrl);
+            await LoadThumbnailAsync(thumbnailUrls);
         }
 
         private void PopulateQualityOptionsFromJson(JsonElement root)
@@ -626,29 +627,148 @@ namespace YTDlpGui
             picThumbnail.Image = null;
         }
 
-        private async Task LoadThumbnailAsync(string thumbnailUrl)
+        private async Task LoadThumbnailAsync(List<string> thumbnailUrls)
         {
             picThumbnail.Image?.Dispose();
             picThumbnail.Image = null;
 
+            if (thumbnailUrls.Count == 0)
+            {
+                return;
+            }
+
+            foreach (string thumbnailUrl in thumbnailUrls)
+            {
+                try
+                {
+                    byte[] imageBytes = await DownloadThumbnailBytesAsync(thumbnailUrl);
+
+                    using MemoryStream stream = new MemoryStream(imageBytes);
+                    using Image image = Image.FromStream(stream, false, true);
+
+                    picThumbnail.Image?.Dispose();
+                    picThumbnail.Image = new Bitmap(image);
+
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("Thumbnail candidate failed: " + ex.Message);
+                }
+            }
+
+            AppendLog("No usable thumbnail could be loaded.");
+        }
+
+        private async Task<byte[]> DownloadThumbnailBytesAsync(string thumbnailUrl)
+        {
+            using HttpClientHandler handler = new HttpClientHandler
+            {
+                AutomaticDecompression =
+                    DecompressionMethods.GZip |
+                    DecompressionMethods.Deflate |
+                    DecompressionMethods.Brotli
+            };
+
+            using HttpClient client = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(15)
+            };
+
+            using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, thumbnailUrl);
+
+            request.Headers.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0"
+            );
+
+            request.Headers.Accept.ParseAdd(
+                "image/jpeg,image/png,image/apng,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+            );
+
+            request.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9,tr;q=0.8");
+
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "image");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "no-cors");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+
+            if (thumbnailUrl.Contains("redd.it", StringComparison.OrdinalIgnoreCase) ||
+                thumbnailUrl.Contains("redditmedia.com", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.Referrer = new Uri("https://www.reddit.com/");
+            }
+
+            using HttpResponseMessage response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            string? mediaType = response.Content.Headers.ContentType?.MediaType;
+
+            if (!string.IsNullOrWhiteSpace(mediaType) &&
+                !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Thumbnail response was not an image: " + mediaType);
+            }
+
+            return await response.Content.ReadAsByteArrayAsync();
+        }
+
+        private List<string> GetThumbnailCandidates(JsonElement root)
+        {
+            List<string> candidates = new List<string>();
+
+            AddThumbnailCandidate(candidates, GetJsonString(root, "thumbnail", string.Empty));
+
+            if (root.TryGetProperty("thumbnails", out JsonElement thumbnails) &&
+                thumbnails.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement thumbnail in thumbnails.EnumerateArray())
+                {
+                    AddThumbnailCandidate(candidates, GetJsonString(thumbnail, "url", string.Empty));
+                }
+            }
+
+            if (root.TryGetProperty("preview", out JsonElement preview) &&
+                preview.ValueKind == JsonValueKind.Object &&
+                preview.TryGetProperty("images", out JsonElement images) &&
+                images.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement previewImage in images.EnumerateArray())
+                {
+                    if (previewImage.TryGetProperty("source", out JsonElement source))
+                    {
+                        AddThumbnailCandidate(candidates, GetJsonString(source, "url", string.Empty));
+                    }
+                }
+            }
+
+            return candidates;
+        }
+
+        private void AddThumbnailCandidate(List<string> candidates, string thumbnailUrl)
+        {
             if (string.IsNullOrWhiteSpace(thumbnailUrl))
             {
                 return;
             }
 
-            try
+            thumbnailUrl = WebUtility.HtmlDecode(thumbnailUrl).Trim();
+
+            if (thumbnailUrl == "default" ||
+                thumbnailUrl == "self" ||
+                thumbnailUrl == "nsfw" ||
+                thumbnailUrl == "spoiler" ||
+                thumbnailUrl == "image")
             {
-                using HttpClient client = new HttpClient();
-                byte[] imageBytes = await client.GetByteArrayAsync(thumbnailUrl);
-
-                using MemoryStream stream = new MemoryStream(imageBytes);
-                using Image image = Image.FromStream(stream);
-
-                picThumbnail.Image = new Bitmap(image);
+                return;
             }
-            catch (Exception ex)
+
+            if (!Uri.IsWellFormedUriString(thumbnailUrl, UriKind.Absolute))
             {
-                AppendLog("Thumbnail could not be loaded: " + ex.Message);
+                return;
+            }
+
+            if (!candidates.Contains(thumbnailUrl))
+            {
+                candidates.Add(thumbnailUrl);
             }
         }
 
